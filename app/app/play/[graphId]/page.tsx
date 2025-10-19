@@ -84,37 +84,57 @@ export default function PlayPage() {
   }, [graphId, saveIdParam, router]);
 
   /**
-   * Calculate the cumulative duration of parent videos
-   * This tells us where to start playback to avoid repetition
+   * Calculate where to start playback to skip parent content
+   * Simple formula: Start at the length of the immediate parent's video
+   * 
+   * Example:
+   * - Root (8s video) → Child starts at 0s (no parent)
+   * - Extension1 (16s video, contains root) → Starts at 8s (root's video length)
+   * - Extension2 (24s video, contains root+ext1) → Starts at 16s (ext1's video length)
    */
-  const calculateParentDuration = (scene: Scene): number => {
+  const calculateStartTime = (scene: Scene): number => {
     if (!graph) return 0;
     
-    let totalDuration = 0;
-    let currentScene: Scene | undefined = scene;
+    // Find immediate parent
+    const parents = graph.getParents(scene.id);
+    const videoParent = parents.find(
+      p => p.kind === SceneType.ROOT || p.kind === SceneType.EXTENSION || p.kind === SceneType.CHOICE
+    );
     
-    // Walk backwards through parents to calculate total duration
+    if (!videoParent) {
+      // No parent, play from start
+      return 0;
+    }
+    
+    // Calculate parent's TOTAL video length (not just its new content)
+    // This is all the content up to and including the parent
+    let parentVideoLength = 0;
+    let currentScene: Scene | undefined = videoParent;
+    
+    // Walk back from parent to root, summing durations
     while (currentScene) {
-      const parents = graph.getParents(currentScene.id);
-      const videoParent = parents.find(
+      const duration = (currentScene.kind === SceneType.CHOICE) 
+        ? 8 
+        : (currentScene.segments || 1) * (currentScene.duration_per_segment_sec || 8);
+      parentVideoLength += duration;
+      
+      const grandparents = graph.getParents(currentScene.id);
+      const grandparent = grandparents.find(
         p => p.kind === SceneType.ROOT || p.kind === SceneType.EXTENSION || p.kind === SceneType.CHOICE
       );
       
-      if (!videoParent) break;
-      
-      // Add parent's duration
-      const parentDuration = (videoParent.segments || 1) * (videoParent.duration_per_segment_sec || 8);
-      totalDuration += parentDuration;
-      
-      currentScene = videoParent;
+      if (!grandparent) break;
+      currentScene = grandparent;
     }
     
-    log.debug('Playback', 'Calculated parent duration', {
+    log.info('Playback', 'Calculated start time', {
       nodeId: scene.id,
-      parentDuration: totalDuration,
+      parentId: videoParent.id,
+      parentVideoLength,
+      startTime: parentVideoLength,
     });
     
-    return totalDuration;
+    return parentVideoLength;
   };
 
   const loadVideoForScene = (gId: string, scene: Scene) => {
@@ -123,7 +143,7 @@ export default function PlayPage() {
       setVideoPath(storedGraph.videoFiles[scene.id]);
       
       // Calculate where to start the video to skip parent content
-      const startTime = calculateParentDuration(scene);
+      const startTime = calculateStartTime(scene);
       setVideoStartTime(startTime);
       
       log.info('Playback', 'Loading video', {
@@ -264,7 +284,7 @@ export default function PlayPage() {
     }
     
     // Calculate start time for choice video (skip parent content)
-    const startTime = calculateParentDuration(currentScene);
+    const startTime = calculateStartTime(currentScene);
     
     log.info('Playback', 'Choice selected, playing choice video', {
       nodeId: currentScene.id,
@@ -293,14 +313,46 @@ export default function PlayPage() {
 
     log.info('Playback', 'Choice video ended, advancing to child', {
       targetNodeId: playingChoiceVideo.targetNodeId,
+      choiceLabel: playingChoiceVideo.choiceLabel,
     });
 
-    // Now advance to the child node (or final extension in chain)
-    const nextScene = graph.nodes[playingChoiceVideo.targetNodeId];
-    const finalExtension = findFinalExtensionInChain(nextScene);
+    // Get the immediate child after choice
+    const firstChildAfterChoice = graph.nodes[playingChoiceVideo.targetNodeId];
+    
+    // Find the final extension in the chain
+    const finalExtension = findFinalExtensionInChain(firstChildAfterChoice);
+    
+    log.info('Playback', 'Extension chain after choice', {
+      firstChild: firstChildAfterChoice?.id,
+      finalExtension: finalExtension?.id,
+    });
+    
+    // IMPORTANT: Calculate startTime based on the FIRST child (where chain begins)
+    // But PLAY the final extension's video
+    const startTime = calculateStartTime(firstChildAfterChoice);
     
     setPlayingChoiceVideo(null);
-    advanceToScene(finalExtension);
+    
+    // Update save game
+    const updatedSave = {
+      ...saveGame!,
+      currentNodeId: finalExtension.id,
+      currentSceneName: finalExtension.name || finalExtension.id,
+      playTimeSec: saveGame!.playTimeSec + Math.floor((Date.now() - sessionStartTime) / 1000),
+    };
+    updateSaveGame(updatedSave);
+    setSaveGame(updatedSave);
+
+    setCurrentScene(finalExtension);
+    setVideoPath(getGraph(graphId)?.videoFiles[finalExtension.id] || null);
+    setVideoStartTime(startTime); // Start where the first extension begins!
+    setSessionStartTime(Date.now());
+    
+    log.info('Playback', 'Playing final extension with first child start time', {
+      playingNode: finalExtension.id,
+      startTime,
+      firstChildInChain: firstChildAfterChoice.id,
+    });
   };
 
   const advanceToScene = (scene: Scene) => {
@@ -352,6 +404,7 @@ export default function PlayPage() {
     return (
       <div className="min-h-screen bg-black">
         <VideoPlayer
+          key={`${currentScene.id}-choice-${videoPath}`}
           videoPath={videoPath}
           scene={currentScene}
           startTime={videoStartTime}
@@ -369,6 +422,7 @@ export default function PlayPage() {
     <div className="min-h-screen bg-black relative">
       {videoPath && (
         <VideoPlayer
+          key={`${currentScene.id}-${videoPath}`}
           videoPath={videoPath}
           scene={currentScene}
           startTime={videoStartTime}

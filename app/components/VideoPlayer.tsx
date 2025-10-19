@@ -31,54 +31,116 @@ export default function VideoPlayer({
   const [showControls, setShowControls] = useState(true);
   const controlsTimeoutRef = useRef<NodeJS.Timeout | null>(null);
 
+  // Simple, single-purpose effect for seeking and playing
   useEffect(() => {
-    log.debug('Playback', 'Video loading', {
+    const video = videoRef.current;
+    if (!video) return;
+
+    log.info('Playback', 'Initializing video', {
       nodeId: scene.id,
       videoPath,
       startTime,
     });
 
-    const video = videoRef.current;
-    if (!video) return;
-
-    let hasSeeked = false;
-
-    // Seek to start time when metadata is loaded
-    const handleLoadedMetadata = () => {
-      if (hasSeeked) return;
-      hasSeeked = true;
+    const initializeAndPlay = () => {
+      log.info('Playback', 'Video ready to initialize', {
+        nodeId: scene.id,
+        readyState: video.readyState,
+        currentTime: video.currentTime,
+      });
       
-      if (startTime > 0) {
-        video.currentTime = startTime;
+      // Set start time if needed
+      if (startTime > 0 && video.currentTime < startTime) {
         log.info('Playback', 'Seeking to start time', {
           nodeId: scene.id,
-          startTime,
+          from: video.currentTime,
+          to: startTime,
         });
-      }
-    };
-
-    // Auto-play when video is ready
-    const handleCanPlay = () => {
-      if (!hasSeeked && startTime > 0) {
+        
         video.currentTime = startTime;
-        hasSeeked = true;
-        log.info('Playback', 'Seeking to start time (canplay)', {
+        
+        // After seeking, poll readyState until ready, then play
+        let playAttempted = false;
+        let pollAttempts = 0;
+        
+        const tryPlayWhenReady = () => {
+          if (playAttempted) return;
+          pollAttempts++;
+          
+          log.debug('Playback', `Checking readyState after seek (attempt ${pollAttempts})`, {
+            nodeId: scene.id,
+            readyState: video.readyState,
+            currentTime: video.currentTime,
+          });
+          
+          if (video.readyState >= 3 || pollAttempts >= 50) {
+            // Ready to play (or gave up waiting)
+            playAttempted = true;
+            
+            if (pollAttempts >= 50) {
+              log.warn('Playback', 'Max poll attempts reached, playing anyway', {
+                nodeId: scene.id,
+                readyState: video.readyState,
+              });
+            } else {
+              log.info('Playback', 'Ready after seek, attempting to play', {
+                nodeId: scene.id,
+                readyState: video.readyState,
+                pollAttempts,
+              });
+            }
+            
+            video.play()
+              .then(() => {
+                log.info('Playback', 'Playback started successfully', {
+                  nodeId: scene.id,
+                  currentTime: video.currentTime,
+                });
+              })
+              .catch((error) => {
+                log.error('Playback', 'Play failed', error, {
+                  nodeId: scene.id,
+                  currentTime: video.currentTime,
+                  readyState: video.readyState,
+                });
+              });
+          } else {
+            // Not ready yet, check again in 100ms
+            setTimeout(tryPlayWhenReady, 100);
+          }
+        };
+        
+        // Start polling after a short delay to let seek initiate
+        setTimeout(tryPlayWhenReady, 100);
+      } else {
+        // No seeking needed, play immediately
+        log.info('Playback', 'Playing from start', {
           nodeId: scene.id,
-          startTime,
         });
+        
+        video.play()
+          .then(() => {
+            log.info('Playback', 'Playback started successfully', {
+              nodeId: scene.id,
+            });
+          })
+          .catch((error) => {
+            log.error('Playback', 'Play failed', error, { nodeId: scene.id });
+          });
       }
-      
-      video.play().catch((error) => {
-        log.error('Playback', 'Auto-play failed', error, { nodeId: scene.id });
-      });
     };
 
-    video.addEventListener('loadedmetadata', handleLoadedMetadata);
-    video.addEventListener('canplay', handleCanPlay, { once: true });
+    // Always wait for canplaythrough - don't trust readyState checks
+    // This ensures video is fully buffered and ready to play
+    log.info('Playback', 'Waiting for video to be ready', { 
+      nodeId: scene.id, 
+      readyState: video.readyState 
+    });
+    
+    video.addEventListener('canplaythrough', initializeAndPlay, { once: true });
 
     return () => {
-      video.removeEventListener('loadedmetadata', handleLoadedMetadata);
-      video.removeEventListener('canplay', handleCanPlay);
+      video.removeEventListener('canplaythrough', initializeAndPlay);
     };
   }, [videoPath, scene.id, startTime]);
 
@@ -86,8 +148,28 @@ export default function VideoPlayer({
     const video = videoRef.current;
     if (!video) return;
 
-    const handlePlay = () => setIsPlaying(true);
-    const handlePause = () => setIsPlaying(false);
+    const handlePlay = () => {
+      log.debug('Playback', 'Play event', { nodeId: scene.id });
+      setIsPlaying(true);
+    };
+    
+    const handlePause = () => {
+      log.warn('Playback', 'Pause event triggered', { 
+        nodeId: scene.id,
+        currentTime: video.currentTime,
+        stackTrace: new Error().stack,
+      });
+      setIsPlaying(false);
+    };
+    
+    const handleSeeking = () => {
+      log.warn('Playback', 'Seeking event (unexpected)', {
+        nodeId: scene.id,
+        currentTime: video.currentTime,
+        seeking: video.seeking,
+      });
+    };
+    
     const handleTimeUpdate = () => setCurrentTime(video.currentTime);
     const handleDurationChange = () => setDuration(video.duration);
     
@@ -98,6 +180,7 @@ export default function VideoPlayer({
 
     video.addEventListener('play', handlePlay);
     video.addEventListener('pause', handlePause);
+    video.addEventListener('seeking', handleSeeking);
     video.addEventListener('timeupdate', handleTimeUpdate);
     video.addEventListener('durationchange', handleDurationChange);
     video.addEventListener('ended', handleEnded);
@@ -105,6 +188,7 @@ export default function VideoPlayer({
     return () => {
       video.removeEventListener('play', handlePlay);
       video.removeEventListener('pause', handlePause);
+      video.removeEventListener('seeking', handleSeeking);
       video.removeEventListener('timeupdate', handleTimeUpdate);
       video.removeEventListener('durationchange', handleDurationChange);
       video.removeEventListener('ended', handleEnded);
@@ -164,6 +248,8 @@ export default function VideoPlayer({
         src={videoPath}
         className="w-full h-full object-contain"
         playsInline
+        preload="auto"
+        crossOrigin="anonymous"
       />
 
       {/* Overlay Controls */}
@@ -246,4 +332,3 @@ export default function VideoPlayer({
     </div>
   );
 }
-

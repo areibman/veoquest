@@ -79,17 +79,26 @@ export async function POST(request: NextRequest) {
               choiceCount: node.edges.length,
             });
 
-            // Generate ALL choice videos concurrently
+            // Generate choice videos (must be sequential due to API limitation)
             if (!parentVideoObject) {
               throw new Error(`CHOICE node ${node.id} requires a parent video to extend from`);
             }
             
-            const choiceGenerationPromises = node.edges.map(async (edge, i) => {
+            log.info('API', `Generating ${node.edges.length} choice videos sequentially (API limitation)`, {
+              nodeId: node.id,
+            });
+            
+            let lastResult: { blob: Blob; video: Video } | undefined;
+            
+            for (let i = 0; i < node.edges.length; i++) {
+              const edge = node.edges[i];
               const choicePrompt = edge.prompt || edge.label || '';
               
               log.video(node.id, `CHOICE_${i}_START`, {
                 label: edge.label,
                 prompt: choicePrompt,
+                choiceNum: i + 1,
+                totalChoices: node.edges.length,
               });
 
               // Each choice extends from the parent video
@@ -128,22 +137,14 @@ export async function POST(request: NextRequest) {
                 targetNodeId: edge.target,
               });
               
-              return { blob: result.blob, video: result.video };
-            });
+              lastResult = { blob: result.blob, video: result.video };
+            }
 
-            // Wait for ALL choices to complete concurrently
-            log.info('Concurrent', `Generating ${node.edges.length} choice videos simultaneously`, {
-              nodeId: node.id,
-            });
-            const results = await Promise.all(choiceGenerationPromises);
-
-            // Return the last choice's video
-            const lastResult = results[results.length - 1];
             if (!lastResult) {
               throw new Error(`Failed to generate choice videos for ${node.id}`);
             }
             
-            return { blob: lastResult.blob, video: lastResult.video };
+            return lastResult;
           }
           
           // For ROOT and EXTENSION nodes - original logic
