@@ -8,17 +8,26 @@ import {
     VideoGenerationReferenceImage,
     VideoGenerationReferenceType,
   } from '@google/genai';
-  import {GenerateVideoParams, GenerationMode} from '../types';
+  import {GenerateVideoParams, GenerationMode} from './types';
+  import { log } from '@/lib/logger';
   
-  // Fix: API key is now handled by process.env.API_KEY, so it's removed from parameters.
+  // Fix: API key is now handled by process.env.GOOGLE_API_KEY, so it's removed from parameters.
   export const generateVideo = async (
     params: GenerateVideoParams,
+    nodeId?: string,
   ): Promise<{objectUrl: string; blob: Blob; uri: string; video: Video}> => {
-    console.log('Starting video generation with params:', params);
+    log.video(nodeId || 'unknown', 'API_CALL_START', {
+      mode: params.mode,
+      prompt: params.prompt,
+      hasParentVideo: !!params.inputVideoObject,
+      resolution: params.resolution,
+      model: params.model,
+    });
   
-    // Fix: API key must be obtained from process.env.API_KEY as per guidelines.
-    const ai = new GoogleGenAI({apiKey: process.env.API_KEY});
+    // Fix: API key must be obtained from process.env.GOOGLE_API_KEY as per guidelines.
+    const ai = new GoogleGenAI({apiKey: process.env.GOOGLE_API_KEY});
   
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
     const config: any = {
       numberOfVideos: 1,
       resolution: params.resolution,
@@ -29,6 +38,7 @@ import {
       config.aspectRatio = params.aspectRatio;
     }
   
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
     const generateVideoPayload: any = {
       model: params.model,
       config: config,
@@ -107,13 +117,29 @@ import {
       }
     }
   
-    console.log('Submitting video generation request...', generateVideoPayload);
+    log.debug('Gemini', 'Submitting video generation request', {
+      nodeId: nodeId || 'unknown',
+      model: params.model,
+      hasPrompt: !!generateVideoPayload.prompt,
+    });
+    
     let operation = await ai.models.generateVideos(generateVideoPayload);
-    console.log('Video generation operation started:', operation);
+    const opWithName = operation as { operation?: { name?: string } };
+    log.info('Gemini', 'Operation started', {
+      nodeId: nodeId || 'unknown',
+      operationName: opWithName.operation?.name || 'unknown',
+    });
   
+    let pollAttempt = 0;
     while (!operation.done) {
-      await new Promise((resolve) => setTimeout(resolve, 10000));
-      console.log('...Generating...');
+      await new Promise((resolve) => setTimeout(resolve, 3000));
+      pollAttempt++;
+      const opWithNamePoll = operation as { operation?: { name?: string } };
+      log.debug('Gemini', 'Polling operation', {
+        nodeId: nodeId || 'unknown',
+        attempt: pollAttempt,
+        operationName: opWithNamePoll.operation?.name || 'unknown',
+      });
       operation = await ai.operations.getVideosOperation({operation: operation});
     }
   
@@ -130,11 +156,15 @@ import {
       }
       const videoObject = firstVideo.video;
   
-      const url = decodeURIComponent(videoObject.uri);
-      console.log('Fetching video from:', url);
+      const url = decodeURIComponent(videoObject.uri || '');
+      log.debug('Gemini', 'Fetching video from URL', {
+        nodeId: nodeId || 'unknown',
+        uri: url.substring(0, 100) + '...',
+      });
   
-      // Fix: The API key for fetching the video must also come from process.env.API_KEY.
-      const res = await fetch(`${url}&key=${process.env.API_KEY}`);
+      // Fix: The API key for fetching the video must also come from process.env.GOOGLE_API_KEY.
+      const apiKey = process.env.GOOGLE_API_KEY || '';
+      const res = await fetch(`${url}&key=${apiKey}`);
   
       if (!res.ok) {
         throw new Error(`Failed to fetch video: ${res.status} ${res.statusText}`);
@@ -143,9 +173,17 @@ import {
       const videoBlob = await res.blob();
       const objectUrl = URL.createObjectURL(videoBlob);
   
+      log.video(nodeId || 'unknown', 'API_CALL_COMPLETE', {
+        videoUri: videoObject.uri,
+        blobSize: `${(videoBlob.size / 1024 / 1024).toFixed(2)}MB`,
+      });
+  
       return {objectUrl, blob: videoBlob, uri: url, video: videoObject};
     } else {
-      console.error('Operation failed:', operation);
+      log.error('Gemini', 'Operation failed - no videos generated', undefined, {
+        nodeId: nodeId || 'unknown',
+        operation: operation,
+      });
       throw new Error('No videos generated.');
     }
   };

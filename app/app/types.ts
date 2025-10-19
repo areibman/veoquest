@@ -46,7 +46,7 @@ export interface VideoFile {
 export interface GenerateVideoParams {
   prompt: string;
   model: VeoModel;
-  aspectRatio: AspectRatio;
+  aspectRatio?: AspectRatio; // Optional - not used for EXTEND_VIDEO mode
   resolution: Resolution;
   mode: GenerationMode;
   startFrame?: ImageFile | null;
