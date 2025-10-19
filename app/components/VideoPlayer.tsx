@@ -15,6 +15,7 @@ interface VideoPlayerProps {
   startTime?: number; // Timestamp to start video at (to skip parent content)
   onVideoEnd: () => void;
   onBack: () => void;
+  shouldPause?: boolean; // Pause video (e.g., when overlay is shown)
 }
 
 export default function VideoPlayer({
@@ -23,6 +24,7 @@ export default function VideoPlayer({
   startTime = 0,
   onVideoEnd,
   onBack,
+  shouldPause = false,
 }: VideoPlayerProps) {
   const videoRef = useRef<HTMLVideoElement>(null);
   const [isPlaying, setIsPlaying] = useState(false);
@@ -30,6 +32,22 @@ export default function VideoPlayer({
   const [duration, setDuration] = useState(0);
   const [showControls, setShowControls] = useState(true);
   const controlsTimeoutRef = useRef<NodeJS.Timeout | null>(null);
+
+  // Handle pause/unpause based on shouldPause prop
+  useEffect(() => {
+    const video = videoRef.current;
+    if (!video) return;
+
+    if (shouldPause) {
+      log.info('Playback', 'Pausing video (overlay shown)', { nodeId: scene.id });
+      video.pause();
+    } else if (video.readyState >= 3 && video.paused && currentTime < duration) {
+      log.info('Playback', 'Resuming video (overlay hidden)', { nodeId: scene.id });
+      video.play().catch((error) => {
+        log.error('Playback', 'Failed to resume video', error, { nodeId: scene.id });
+      });
+    }
+  }, [shouldPause, scene.id, currentTime, duration]);
 
   // Simple, single-purpose effect for seeking and playing
   useEffect(() => {

@@ -449,6 +449,7 @@ export default function PlayPage() {
           startTime={videoStartTime}
           onVideoEnd={handleVideoEnd}
           onBack={() => router.push('/')}
+          shouldPause={showChoiceOverlay}
         />
       )}
       
