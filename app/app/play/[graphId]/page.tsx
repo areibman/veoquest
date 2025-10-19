@@ -234,22 +234,36 @@ export default function PlayPage() {
   const handleVideoEnd = () => {
     if (!currentScene || !graph) return;
 
-    log.info('Playback', 'Video ended', { nodeId: currentScene.id });
+    log.info('Playback', 'Video ended', { 
+      nodeId: currentScene.id,
+      edgeCount: currentScene.edges?.length || 0,
+    });
 
     // Check if there's a single auto-advance edge
     if (currentScene.edges && currentScene.edges.length === 1) {
       const nextNodeId = currentScene.edges[0].target;
       const nextScene = graph.nodes[nextNodeId];
 
+      log.info('Playback', 'Auto-advancing to next scene', {
+        currentNode: currentScene.id,
+        nextNode: nextNodeId,
+        nextNodeKind: nextScene?.kind,
+        nextNodeName: nextScene?.name,
+      });
+
       if (nextScene.kind === SceneType.CHOICE) {
         // Move to choice screen but keep video visible (paused)
         setCurrentScene(nextScene);
         // Don't clear videoPath - keep showing current video with overlay on top
-        log.info('Playback', 'Moving to choice', { choiceNodeId: nextScene.id });
+        log.info('Playback', 'Showing choice overlay', { 
+          choiceNodeId: nextScene.id,
+          choiceName: nextScene.name,
+          optionCount: nextScene.edges?.length || 0,
+        });
       } else if (nextScene.kind === SceneType.END) {
         // End of game
         log.info('Playback', 'Game ended', { finalNode: nextScene.id });
-        alert('Game Complete! Thanks for playing.');
+        alert('Game Complete! Thanks for playing!');
         router.push('/');
       } else {
         // Should not happen since we already played the final extension
@@ -264,6 +278,13 @@ export default function PlayPage() {
       log.info('Playback', 'Game ended', { finalNode: currentScene.id });
       alert('Game Complete! Thanks for playing.');
       router.push('/');
+    } else {
+      // Multiple edges - shouldn't happen for final extension
+      log.error('Playback', 'Multiple edges after video end - unexpected', undefined, {
+        nodeId: currentScene.id,
+        edgeCount: currentScene.edges.length,
+        edges: currentScene.edges,
+      });
     }
   };
 
