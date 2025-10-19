@@ -147,7 +147,7 @@ export async function POST(request: NextRequest) {
             return lastResult;
           }
           
-          // For ROOT and EXTENSION nodes - original logic
+          // For ROOT and EXTENSION nodes - cumulative video generation
           // Determine prompt
           let prompt = '';
           if (node.prompt !== null && node.prompt !== undefined) {
@@ -186,7 +186,7 @@ export async function POST(request: NextRequest) {
                 mode: GenerationMode.TEXT_TO_VIDEO,
               }, node.id);
             } else {
-              // Extension or subsequent segments
+              // Extension or subsequent segments: EXTEND from parent or previous segment
               if (!currentVideoObject) {
                 throw new Error(`No video object available for extension (node: ${node.id}, segment: ${seg})`);
               }

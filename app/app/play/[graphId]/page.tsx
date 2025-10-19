@@ -84,57 +84,91 @@ export default function PlayPage() {
   }, [graphId, saveIdParam, router]);
 
   /**
-   * Calculate where to start playback to skip parent content
-   * Simple formula: Start at the length of the immediate parent's video
+   * Calculate where to start playback in cumulative videos
    * 
-   * Example:
-   * - Root (8s video) → Child starts at 0s (no parent)
-   * - Extension1 (16s video, contains root) → Starts at 8s (root's video length)
-   * - Extension2 (24s video, contains root+ext1) → Starts at 16s (ext1's video length)
+   * For cumulative videos:
+   * - ROOT: Start at 0 (it's the first video)
+   * - EXTENSION/CHOICE: Start at the timestamp where new content begins
+   *   
+   * The start timestamp is the total duration of all parent content
+   * (walking back through the graph to the root)
    */
   const calculateStartTime = (scene: Scene): number => {
     if (!graph) return 0;
     
-    // Find immediate parent
+    // ROOT nodes always start at 0
+    if (scene.kind === SceneType.ROOT) {
+      log.info('Playback', 'ROOT node starts at beginning', {
+        nodeId: scene.id,
+        startTime: 0,
+      });
+      return 0;
+    }
+    
+    // For EXTENSION and CHOICE nodes, calculate how much parent content to skip
+    // The video contains all parent content, so we need to skip to where new content begins
+    
+    // Find the immediate parent to determine how much content comes before this node
     const parents = graph.getParents(scene.id);
     const videoParent = parents.find(
       p => p.kind === SceneType.ROOT || p.kind === SceneType.EXTENSION || p.kind === SceneType.CHOICE
     );
     
     if (!videoParent) {
-      // No parent, play from start
+      // No parent found (shouldn't happen), start at 0
+      log.warn('Playback', 'No video parent found, starting at 0', {
+        nodeId: scene.id,
+      });
       return 0;
     }
     
-    // Calculate parent's TOTAL video length (not just its new content)
-    // This is all the content up to and including the parent
-    let parentVideoLength = 0;
-    let currentScene: Scene | undefined = videoParent;
+    // Calculate total duration of all content BEFORE this node
+    // This is where the new content starts in the cumulative video
+    let parentContentDuration = 0;
+    let currentNode: Scene | undefined = videoParent;
     
-    // Walk back from parent to root, summing durations
-    while (currentScene) {
-      const duration = (currentScene.kind === SceneType.CHOICE) 
-        ? 8 
-        : (currentScene.segments || 1) * (currentScene.duration_per_segment_sec || 8);
-      parentVideoLength += duration;
+    // Walk back from parent to root, summing up all durations
+    while (currentNode) {
+      // Calculate the actual duration of this node based on its configuration
+      let nodeDuration = 0;
       
-      const grandparents = graph.getParents(currentScene.id);
-      const grandparent = grandparents.find(
+      if (currentNode.kind === SceneType.CHOICE) {
+        // CHOICE nodes generate one 8-second segment
+        nodeDuration = 8;
+      } else {
+        // ROOT and EXTENSION nodes: segments * duration_per_segment
+        const segments = currentNode.segments || 1;
+        const durationPerSegment = currentNode.duration_per_segment_sec || 8;
+        nodeDuration = segments * durationPerSegment;
+      }
+      
+      parentContentDuration += nodeDuration;
+      
+      log.debug('Playback', 'Adding parent node duration', {
+        nodeId: currentNode.id,
+        nodeKind: currentNode.kind,
+        segments: currentNode.segments || 1,
+        durationPerSegment: currentNode.duration_per_segment_sec || 8,
+        nodeDuration,
+        runningTotal: parentContentDuration,
+      });
+      
+      // Find this node's parent to continue walking back
+      const grandparents = graph.getParents(currentNode.id);
+      currentNode = grandparents.find(
         p => p.kind === SceneType.ROOT || p.kind === SceneType.EXTENSION || p.kind === SceneType.CHOICE
       );
-      
-      if (!grandparent) break;
-      currentScene = grandparent;
     }
     
-    log.info('Playback', 'Calculated start time', {
+    log.info('Playback', 'Calculated start time for cumulative video', {
       nodeId: scene.id,
       parentId: videoParent.id,
-      parentVideoLength,
-      startTime: parentVideoLength,
+      parentContentDuration,
+      startTime: parentContentDuration,
+      explanation: `Skip ${parentContentDuration}s of parent content to reach new content`,
     });
     
-    return parentVideoLength;
+    return parentContentDuration;
   };
 
   const loadVideoForScene = (gId: string, scene: Scene) => {
