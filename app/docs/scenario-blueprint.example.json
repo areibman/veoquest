@@ -1,0 +1,195 @@
+{
+  "schemaVersion": "veoquest.blueprint.v1",
+  "game": {
+    "id": "game-detective-interrogation",
+    "title": "Detective Interrogation",
+    "description": "A compact branching interrogation scenario for local VeoQuest demos.",
+    "status": "draft",
+    "defaultScenarioId": "scenario-detective-interrogation",
+    "metadata": {
+      "genre": "detective",
+      "contentRating": "PG"
+    }
+  },
+  "contentPack": {
+    "id": "pack-detective-base",
+    "gameId": "game-detective-interrogation",
+    "title": "Detective Interrogation Base Story",
+    "description": "Free base release.",
+    "releaseType": "base_game",
+    "accessType": "free",
+    "priceTier": "free",
+    "status": "draft",
+    "scenarioIds": [
+      "scenario-detective-interrogation"
+    ]
+  },
+  "scenario": {
+    "id": "scenario-detective-interrogation",
+    "gameId": "game-detective-interrogation",
+    "contentPackId": "pack-detective-base",
+    "blueprintId": "blueprint-detective-interrogation",
+    "title": "Detective Interrogation",
+    "description": "A detective chooses how to question a suspect before evidence disappears.",
+    "status": "draft",
+    "rootNodeId": "detective-opening",
+    "settings": {
+      "aspectRatio": "16:9",
+      "clipDurationSeconds": 4,
+      "extensionDurationSeconds": 4,
+      "clipCountLimit": 12,
+      "branchDepthLimit": 4,
+      "costPerClipCents": 80,
+      "styleGuidance": "Noir lighting, clear facial reactions, readable choices."
+    },
+    "originalPromptId": "prompt-detective-interrogation"
+  },
+  "nodes": [
+    {
+      "id": "detective-opening",
+      "title": "The Interview Room",
+      "description": "The suspect watches the clock while the detective enters.",
+      "prompt": "Noir interview room scene where a detective enters and the suspect watches the clock anxiously.",
+      "position": {
+        "x": 120,
+        "y": 80
+      },
+      "choiceIds": [
+        "choice-pressure",
+        "choice-empathy"
+      ],
+      "isEnding": false,
+      "generationType": "create"
+    },
+    {
+      "id": "detective-pressure",
+      "title": "Apply Pressure",
+      "description": "The detective confronts the suspect with a contradiction.",
+      "prompt": "Continue the noir interrogation as the detective applies pressure with a contradiction in the suspect story.",
+      "position": {
+        "x": 40,
+        "y": 280
+      },
+      "choiceIds": [
+        "choice-confession"
+      ],
+      "isEnding": false,
+      "generationType": "extend"
+    },
+    {
+      "id": "detective-empathy",
+      "title": "Offer Empathy",
+      "description": "The detective lowers the temperature and listens.",
+      "prompt": "Continue the noir interrogation as the detective offers empathy and the suspect begins to trust them.",
+      "position": {
+        "x": 360,
+        "y": 280
+      },
+      "choiceIds": [
+        "choice-hidden-proof"
+      ],
+      "isEnding": false,
+      "generationType": "extend"
+    },
+    {
+      "id": "detective-confession-ending",
+      "title": "Confession",
+      "description": "The suspect admits the truth before the evidence disappears.",
+      "prompt": "Resolve the interrogation with a confession and a strong final noir image.",
+      "position": {
+        "x": 80,
+        "y": 500
+      },
+      "choiceIds": [],
+      "isEnding": true,
+      "generationType": "extend"
+    },
+    {
+      "id": "detective-proof-ending",
+      "title": "Hidden Proof",
+      "description": "The suspect reveals where the missing evidence is hidden.",
+      "prompt": "Resolve the interrogation with the suspect revealing hidden proof and the detective leaving quickly.",
+      "position": {
+        "x": 420,
+        "y": 500
+      },
+      "choiceIds": [],
+      "isEnding": true,
+      "generationType": "extend"
+    }
+  ],
+  "choices": [
+    {
+      "id": "choice-pressure",
+      "sourceNodeId": "detective-opening",
+      "targetNodeId": "detective-pressure",
+      "label": "Apply pressure",
+      "description": "Use the contradiction immediately.",
+      "displayOrder": 0
+    },
+    {
+      "id": "choice-empathy",
+      "sourceNodeId": "detective-opening",
+      "targetNodeId": "detective-empathy",
+      "label": "Offer empathy",
+      "description": "Lower the temperature and listen.",
+      "displayOrder": 1
+    },
+    {
+      "id": "choice-confession",
+      "sourceNodeId": "detective-pressure",
+      "targetNodeId": "detective-confession-ending",
+      "label": "Demand the truth",
+      "description": "Push for the full confession.",
+      "displayOrder": 0
+    },
+    {
+      "id": "choice-hidden-proof",
+      "sourceNodeId": "detective-empathy",
+      "targetNodeId": "detective-proof-ending",
+      "label": "Ask about the evidence",
+      "description": "Follow the trust into a practical lead.",
+      "displayOrder": 0
+    }
+  ],
+  "generationPlan": {
+    "approved": false,
+    "clipCount": 3,
+    "totalRuntimeSeconds": 12,
+    "extensionCount": 2,
+    "jobs": [
+      {
+        "nodeId": "detective-opening",
+        "requestType": "createVideo",
+        "durationSeconds": 4,
+        "prompt": "Noir interview room scene where a detective enters and the suspect watches the clock anxiously."
+      },
+      {
+        "nodeId": "detective-pressure",
+        "requestType": "extendVideo",
+        "durationSeconds": 4,
+        "prompt": "Continue the noir interrogation as the detective applies pressure with a contradiction in the suspect story."
+      },
+      {
+        "nodeId": "detective-empathy",
+        "requestType": "extendVideo",
+        "durationSeconds": 4,
+        "prompt": "Continue the noir interrogation as the detective offers empathy and the suspect begins to trust them."
+      }
+    ]
+  },
+  "estimatedCost": {
+    "clipCount": 3,
+    "extensionCount": 2,
+    "totalRuntimeSeconds": 12,
+    "generationJobs": 3,
+    "estimatedCostCents": 240
+  },
+  "validationStatus": "valid",
+  "validationErrors": [],
+  "metadata": {
+    "publisherNotes": "Agents can copy this structure and replace IDs, prompts, nodes, and choices.",
+    "styleGuidance": "Noir lighting, restrained action, clear choice beats.",
+    "generatedBy": "veoquest-example"
+  }
+}

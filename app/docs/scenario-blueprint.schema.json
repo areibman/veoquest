@@ -1,0 +1,174 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://veoquest.local/schemas/scenario-blueprint.schema.json",
+  "title": "VeoQuest Scenario Blueprint",
+  "type": "object",
+  "required": [
+    "schemaVersion",
+    "game",
+    "contentPack",
+    "scenario",
+    "nodes",
+    "choices",
+    "generationPlan",
+    "estimatedCost",
+    "validationStatus",
+    "validationErrors",
+    "metadata"
+  ],
+  "properties": {
+    "schemaVersion": {
+      "const": "veoquest.blueprint.v1"
+    },
+    "game": {
+      "type": "object",
+      "required": ["id", "title", "description", "status", "metadata"],
+      "properties": {
+        "id": { "type": "string", "pattern": "^[a-z][a-z0-9-]{2,}$" },
+        "title": { "type": "string", "minLength": 1 },
+        "description": { "type": "string" },
+        "coverAssetPath": { "type": "string" },
+        "status": { "enum": ["draft", "qa", "published", "archived"] },
+        "defaultScenarioId": { "type": "string" },
+        "metadata": { "type": "object" }
+      },
+      "additionalProperties": true
+    },
+    "contentPack": {
+      "type": "object",
+      "required": ["id", "gameId", "title", "description", "releaseType", "accessType", "priceTier", "status"],
+      "properties": {
+        "id": { "type": "string", "pattern": "^[a-z][a-z0-9-]{2,}$" },
+        "gameId": { "type": "string" },
+        "title": { "type": "string", "minLength": 1 },
+        "description": { "type": "string" },
+        "releaseType": {
+          "enum": ["base_game", "chapter", "expansion_storyline", "bonus_branch_pack", "alternate_ending_pack", "seasonal_story"]
+        },
+        "accessType": { "enum": ["free", "included", "locked", "paid", "purchased"] },
+        "priceTier": { "enum": ["free", "standard", "premium"] },
+        "status": { "enum": ["draft", "qa", "published", "archived"] },
+        "scenarioIds": {
+          "type": "array",
+          "items": { "type": "string" }
+        },
+        "publishedAt": { "type": "string" }
+      },
+      "additionalProperties": true
+    },
+    "scenario": {
+      "type": "object",
+      "required": ["id", "gameId", "contentPackId", "title", "description", "status", "rootNodeId", "settings"],
+      "properties": {
+        "id": { "type": "string", "pattern": "^[a-z][a-z0-9-]{2,}$" },
+        "gameId": { "type": "string" },
+        "contentPackId": { "type": "string" },
+        "blueprintId": { "type": "string" },
+        "title": { "type": "string", "minLength": 1 },
+        "description": { "type": "string" },
+        "status": { "enum": ["draft", "qa", "published", "archived"] },
+        "rootNodeId": { "type": "string" },
+        "originalPromptId": { "type": "string" },
+        "settings": {
+          "type": "object",
+          "required": ["aspectRatio", "clipDurationSeconds", "extensionDurationSeconds", "clipCountLimit", "branchDepthLimit", "costPerClipCents"],
+          "properties": {
+            "aspectRatio": { "enum": ["16:9", "9:16"] },
+            "clipDurationSeconds": { "type": "number", "minimum": 1 },
+            "extensionDurationSeconds": { "type": "number", "minimum": 1 },
+            "clipCountLimit": { "type": "integer", "minimum": 1 },
+            "branchDepthLimit": { "type": "integer", "minimum": 1 },
+            "costPerClipCents": { "type": "integer", "minimum": 0 },
+            "styleGuidance": { "type": "string" }
+          }
+        }
+      },
+      "additionalProperties": true
+    },
+    "nodes": {
+      "type": "array",
+      "minItems": 1,
+      "items": {
+        "type": "object",
+        "required": ["id", "title", "description", "prompt", "position", "isEnding", "generationType"],
+        "properties": {
+          "id": { "type": "string", "pattern": "^[a-z][a-z0-9-]{2,}$" },
+          "title": { "type": "string", "minLength": 1 },
+          "description": { "type": "string" },
+          "prompt": { "type": "string" },
+          "position": {
+            "type": "object",
+            "required": ["x", "y"],
+            "properties": {
+              "x": { "type": "number" },
+              "y": { "type": "number" }
+            }
+          },
+          "choiceIds": {
+            "type": "array",
+            "items": { "type": "string" }
+          },
+          "isEnding": { "type": "boolean" },
+          "isHidden": { "type": "boolean" },
+          "generationType": { "enum": ["create", "extend"] },
+          "publisherNotes": { "type": "string" }
+        }
+      }
+    },
+    "choices": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "required": ["id", "sourceNodeId", "targetNodeId", "label", "description", "displayOrder"],
+        "properties": {
+          "id": { "type": "string", "pattern": "^[a-z][a-z0-9-]{2,}$" },
+          "sourceNodeId": { "type": "string" },
+          "targetNodeId": { "type": "string" },
+          "label": { "type": "string", "minLength": 1 },
+          "description": { "type": "string" },
+          "displayOrder": { "type": "integer", "minimum": 0 },
+          "conditions": { "type": "object" }
+        }
+      }
+    },
+    "generationPlan": {
+      "type": "object",
+      "required": ["approved", "clipCount", "totalRuntimeSeconds", "extensionCount", "jobs"],
+      "properties": {
+        "approved": { "type": "boolean" },
+        "approvedAt": { "type": "string" },
+        "clipCount": { "type": "integer", "minimum": 0 },
+        "totalRuntimeSeconds": { "type": "number", "minimum": 0 },
+        "extensionCount": { "type": "integer", "minimum": 0 },
+        "jobs": {
+          "type": "array",
+          "items": {
+            "type": "object",
+            "required": ["nodeId", "requestType", "durationSeconds", "prompt"],
+            "properties": {
+              "nodeId": { "type": "string" },
+              "requestType": { "enum": ["createVideo", "extendVideo"] },
+              "durationSeconds": { "type": "number", "minimum": 1 },
+              "prompt": { "type": "string" }
+            }
+          }
+        }
+      }
+    },
+    "estimatedCost": {
+      "type": "object",
+      "required": ["clipCount", "extensionCount", "totalRuntimeSeconds", "generationJobs", "estimatedCostCents"],
+      "properties": {
+        "clipCount": { "type": "integer", "minimum": 0 },
+        "extensionCount": { "type": "integer", "minimum": 0 },
+        "totalRuntimeSeconds": { "type": "number", "minimum": 0 },
+        "generationJobs": { "type": "integer", "minimum": 0 },
+        "estimatedCostCents": { "type": "integer", "minimum": 0 }
+      }
+    },
+    "validationStatus": { "enum": ["unknown", "valid", "invalid"] },
+    "validationErrors": { "type": "array" },
+    "metadata": { "type": "object" }
+  },
+  "additionalProperties": false
+}

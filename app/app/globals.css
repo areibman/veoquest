@@ -120,3 +120,14 @@
     @apply bg-background text-foreground;
   }
 }
+
+@keyframes veoquest-pan {
+  0% {
+    transform: translate3d(-2%, -1%, 0) scale(1.1);
+    filter: saturate(1);
+  }
+  100% {
+    transform: translate3d(2%, 1%, 0) scale(1.16);
+    filter: saturate(1.18);
+  }
+}

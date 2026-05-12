@@ -1,502 +1,320 @@
-/**
- * @license
- * SPDX-License-Identifier: Apache-2.0
- */
-
 'use client';
 
 export const dynamic = 'force-dynamic';
 
-import { useEffect, useState } from 'react';
+import { Suspense, useCallback, useEffect, useMemo, useState } from 'react';
 import { useParams, useRouter, useSearchParams } from 'next/navigation';
-import { SceneGraph, Scene, SceneType } from '@/lib/sceneGraph';
-import { getGraph, getChoiceVideos } from '@/lib/graphStorage';
-import {
-  getSaveGame,
-  createSaveGame,
-  updateSaveGame,
-  SaveGame,
-  recordChoice,
-} from '@/lib/saveGameStorage';
-import { log } from '@/lib/logger';
-import VideoPlayer from '@/components/VideoPlayer';
-import ChoiceOverlay from '@/components/ChoiceOverlay';
-import SaveGameList from '@/components/SaveGameList';
+import { ArrowLeft, CheckCircle2, Lock, RefreshCw, RotateCcw } from 'lucide-react';
 
-export default function PlayPage() {
+import SimulatedVideoClip from '@/components/SimulatedVideoClip';
+import { Badge } from '@/components/ui/badge';
+import { Button } from '@/components/ui/button';
+import {
+  buildPathSummary,
+  createPlaythrough,
+  getChoicesForNode,
+  getLatestPlaythrough,
+  getScenarioAccess,
+  grantContentPackEntitlement,
+  restartPlaythrough,
+  selectChoice,
+} from '@/lib/veoquestCore';
+import { loadDatabase, saveDatabase } from '@/lib/veoquestStorage';
+import { Choice, Playthrough, VeoQuestDatabase } from '@/lib/veoquestModels';
+
+function PlayPageContent() {
   const params = useParams();
   const router = useRouter();
   const searchParams = useSearchParams();
-  const graphId = params?.graphId as string;
-  const saveIdParam = searchParams?.get('saveId');
+  const scenarioId = params?.graphId as string;
+  const publisherPreview = searchParams?.get('preview') === 'publisher';
 
-  const [graph, setGraph] = useState<SceneGraph | null>(null);
-  const [currentScene, setCurrentScene] = useState<Scene | null>(null);
-  const [saveGame, setSaveGame] = useState<SaveGame | null>(null);
-  const [showSaveGameList, setShowSaveGameList] = useState(false);
-  const [videoPath, setVideoPath] = useState<string | null>(null);
-  const [videoStartTime, setVideoStartTime] = useState<number>(0); // Timestamp to start video at
-  const [sessionStartTime, setSessionStartTime] = useState<number>(Date.now());
-  const [playingChoiceVideo, setPlayingChoiceVideo] = useState<{
-    videoPath: string;
-    targetNodeId: string;
-    choiceLabel: string;
-  } | null>(null);
+  const [db, setDb] = useState<VeoQuestDatabase | null>(null);
+  const [playthrough, setPlaythrough] = useState<Playthrough | null>(null);
+  const [showChoices, setShowChoices] = useState(false);
+  const [showEnding, setShowEnding] = useState(false);
+  const [selectedChoiceId, setSelectedChoiceId] = useState<string | null>(null);
+  const [activeChoiceIndex, setActiveChoiceIndex] = useState(0);
+  const [fastMode, setFastMode] = useState(false);
 
-  // Load graph and save game
   useEffect(() => {
-    if (!graphId) return;
-
-    const storedGraph = getGraph(graphId);
-    if (!storedGraph) {
-      alert('Graph not found');
-      router.push('/');
+    let loaded = loadDatabase();
+    const scenario = loaded.scenarios[scenarioId];
+    if (!scenario) {
+      setDb(loaded);
       return;
     }
 
-    if (!storedGraph.generationComplete) {
-      alert('This game has not been generated yet. Please complete video generation first.');
-      router.push('/');
-      return;
+    const access = getScenarioAccess(loaded, scenarioId, { publisherPreview });
+    if (access.playable) {
+      const latest = getLatestPlaythrough(loaded, scenarioId);
+      if (latest) {
+        setPlaythrough(latest);
+        setShowEnding(latest.status === 'completed');
+      } else {
+        const created = createPlaythrough(loaded, scenarioId);
+        loaded = created.db;
+        saveDatabase(loaded);
+        setPlaythrough(created.playthrough);
+      }
     }
 
-    const sceneGraph = SceneGraph.fromJSON(storedGraph.graph);
-    setGraph(sceneGraph);
+    setFastMode(window.localStorage.getItem('veoquest_test_fast') === '1');
+    setDb(loaded);
+  }, [publisherPreview, scenarioId]);
 
-    // Load or create save game
-    if (saveIdParam) {
-      const existingSave = getSaveGame(saveIdParam);
-      if (existingSave) {
-        setSaveGame(existingSave);
-        const scene = sceneGraph.nodes[existingSave.currentNodeId];
-        setCurrentScene(scene);
-        loadVideoForScene(graphId, scene);
-        log.info('Playback', 'Loaded save game', {
-          saveId: saveIdParam,
-          currentNode: existingSave.currentNodeId,
-        });
-      } else {
-        setShowSaveGameList(true);
-      }
+  const scenario = db?.scenarios[scenarioId] || null;
+  const currentNode = db && playthrough ? db.nodes[playthrough.currentNodeId] : null;
+  const clip = currentNode?.clipId && db ? db.clips[currentNode.clipId] : null;
+  const choices = useMemo(() => (db && currentNode ? getChoicesForNode(db, currentNode.id) : []), [db, currentNode]);
+  const access = db && scenario ? getScenarioAccess(db, scenario.id, { publisherPreview }) : null;
+  const endingActive = showEnding || playthrough?.status === 'completed' || currentNode?.isEnding || false;
+
+  const persist = (next: VeoQuestDatabase, nextPlaythrough?: Playthrough) => {
+    saveDatabase(next);
+    setDb(next);
+    if (nextPlaythrough) {
+      setPlaythrough(nextPlaythrough);
+    }
+  };
+
+  const handleDecisionReady = useCallback(() => {
+    if (choices.length > 0 && !endingActive) {
+      setShowChoices(true);
+    }
+  }, [choices.length, endingActive]);
+
+  const handleClipEnded = useCallback(() => {
+    if (!currentNode) return;
+    if (currentNode.isEnding || choices.length === 0) {
+      setShowChoices(false);
+      setShowEnding(true);
     } else {
-      setShowSaveGameList(true);
+      setShowChoices(true);
     }
-  }, [graphId, saveIdParam, router]);
+  }, [choices.length, currentNode]);
 
-  /**
-   * Calculate where to start playback in cumulative videos
-   * 
-   * For cumulative videos:
-   * - ROOT: Start at 0 (it's the first video)
-   * - EXTENSION/CHOICE: Start at the timestamp where new content begins
-   *   
-   * The start timestamp is the total duration of all parent content
-   * (walking back through the graph to the root)
-   */
-  const calculateStartTime = (scene: Scene): number => {
-    if (!graph) return 0;
-    
-    // ROOT nodes always start at 0
-    if (scene.kind === SceneType.ROOT) {
-      log.info('Playback', 'ROOT node starts at beginning', {
-        nodeId: scene.id,
-        startTime: 0,
-      });
-      return 0;
-    }
-    
-    // For EXTENSION and CHOICE nodes, calculate how much parent content to skip
-    // The video contains all parent content, so we need to skip to where new content begins
-    
-    // Find the immediate parent to determine how much content comes before this node
-    const parents = graph.getParents(scene.id);
-    const videoParent = parents.find(
-      p => p.kind === SceneType.ROOT || p.kind === SceneType.EXTENSION || p.kind === SceneType.CHOICE
-    );
-    
-    if (!videoParent) {
-      // No parent found (shouldn't happen), start at 0
-      log.warn('Playback', 'No video parent found, starting at 0', {
-        nodeId: scene.id,
-      });
-      return 0;
-    }
-    
-    // Calculate total duration of all content BEFORE this node
-    // This is where the new content starts in the cumulative video
-    let parentContentDuration = 0;
-    let currentNode: Scene | undefined = videoParent;
-    
-    // Walk back from parent to root, summing up all durations
-    while (currentNode) {
-      // Calculate the actual duration of this node based on its configuration
-      let nodeDuration = 0;
-      
-      if (currentNode.kind === SceneType.CHOICE) {
-        // CHOICE nodes generate one 8-second segment
-        nodeDuration = 8;
-      } else {
-        // ROOT and EXTENSION nodes: segments * duration_per_segment
-        const segments = currentNode.segments || 1;
-        const durationPerSegment = currentNode.duration_per_segment_sec || 8;
-        nodeDuration = segments * durationPerSegment;
+  const choose = useCallback((choice: Choice) => {
+    if (!db || !playthrough || selectedChoiceId) return;
+    setSelectedChoiceId(choice.id);
+    window.setTimeout(() => {
+      try {
+        const targetIsEnding = Boolean(db.nodes[choice.targetNodeId]?.isEnding);
+        const updated = selectChoice(db, playthrough.id, choice.id);
+        persist(updated.db, updated.playthrough);
+        setShowChoices(false);
+        setShowEnding(targetIsEnding);
+        setSelectedChoiceId(null);
+        setActiveChoiceIndex(0);
+      } catch {
+        setSelectedChoiceId(null);
       }
-      
-      parentContentDuration += nodeDuration;
-      
-      log.debug('Playback', 'Adding parent node duration', {
-        nodeId: currentNode.id,
-        nodeKind: currentNode.kind,
-        segments: currentNode.segments || 1,
-        durationPerSegment: currentNode.duration_per_segment_sec || 8,
-        nodeDuration,
-        runningTotal: parentContentDuration,
-      });
-      
-      // Find this node's parent to continue walking back
-      const grandparents = graph.getParents(currentNode.id);
-      currentNode = grandparents.find(
-        p => p.kind === SceneType.ROOT || p.kind === SceneType.EXTENSION || p.kind === SceneType.CHOICE
-      );
-    }
-    
-    log.info('Playback', 'Calculated start time for cumulative video', {
-      nodeId: scene.id,
-      parentId: videoParent.id,
-      parentContentDuration,
-      startTime: parentContentDuration,
-      explanation: `Skip ${parentContentDuration}s of parent content to reach new content`,
-    });
-    
-    return parentContentDuration;
-  };
+    }, 180);
+  }, [db, playthrough, selectedChoiceId]);
 
-  const loadVideoForScene = (gId: string, scene: Scene) => {
-    const storedGraph = getGraph(gId);
-    if (storedGraph && storedGraph.videoFiles[scene.id]) {
-      setVideoPath(storedGraph.videoFiles[scene.id]);
-      
-      // Calculate where to start the video to skip parent content
-      const startTime = calculateStartTime(scene);
-      setVideoStartTime(startTime);
-      
-      log.info('Playback', 'Loading video', {
-        nodeId: scene.id,
-        videoPath: storedGraph.videoFiles[scene.id],
-        startTime,
-      });
-    }
-  };
-
-  /**
-   * Find the final extension in a chain before a choice/branch/end
-   * Returns the last extension node that should be played
-   */
-  const findFinalExtensionInChain = (startScene: Scene): Scene => {
-    if (!graph) return startScene;
-    
-    let currentScene = startScene;
-    
-    // Follow the chain as long as there's a single extension edge
-    while (
-      currentScene.edges && 
-      currentScene.edges.length === 1 &&
-      currentScene.kind !== SceneType.END
-    ) {
-      const nextNodeId = currentScene.edges[0].target;
-      const nextScene = graph.nodes[nextNodeId];
-      
-      // Stop if we hit a choice or end
-      if (nextScene.kind === SceneType.CHOICE || nextScene.kind === SceneType.END) {
-        break;
+  useEffect(() => {
+    if (!showChoices || choices.length === 0) return;
+    const onKeyDown = (event: KeyboardEvent) => {
+      if (event.key === 'ArrowDown' || event.key === 'ArrowRight') {
+        event.preventDefault();
+        setActiveChoiceIndex((index) => (index + 1) % choices.length);
       }
-      
-      // Continue following extensions
-      if (nextScene.kind === SceneType.EXTENSION) {
-        currentScene = nextScene;
-      } else {
-        break;
+      if (event.key === 'ArrowUp' || event.key === 'ArrowLeft') {
+        event.preventDefault();
+        setActiveChoiceIndex((index) => (index - 1 + choices.length) % choices.length);
       }
-    }
-    
-    log.debug('Playback', 'Found final extension in chain', {
-      startNode: startScene.id,
-      finalNode: currentScene.id,
-    });
-    
-    return currentScene;
-  };
-
-  const handleSelectSaveGame = (save: SaveGame | 'new') => {
-    if (!graph) return;
-
-    let activeSave: SaveGame;
-    if (save === 'new') {
-      // Start new game from root, but find the final extension in the chain
-      const root = graph.root();
-      const finalExtension = findFinalExtensionInChain(root);
-      
-      activeSave = createSaveGame(
-        graphId,
-        `Save ${Date.now()}`,
-        finalExtension.id,
-        finalExtension.name || finalExtension.id
-      );
-      setCurrentScene(finalExtension);
-      loadVideoForScene(graphId, finalExtension);
-      log.info('Playback', 'Started new game', { 
-        graphId, 
-        rootId: root.id,
-        playingNode: finalExtension.id 
-      });
-    } else {
-      activeSave = save;
-      const scene = graph.nodes[save.currentNodeId];
-      setCurrentScene(scene);
-      loadVideoForScene(graphId, scene);
-      log.info('Playback', 'Loaded existing save', {
-        saveId: save.id,
-        currentNode: save.currentNodeId,
-      });
-    }
-
-    setSaveGame(activeSave);
-    setShowSaveGameList(false);
-    setSessionStartTime(Date.now());
-  };
-
-  const handleVideoEnd = () => {
-    if (!currentScene || !graph) return;
-
-    log.info('Playback', 'Video ended', { 
-      nodeId: currentScene.id,
-      edgeCount: currentScene.edges?.length || 0,
-    });
-
-    // Check if there's a single auto-advance edge
-    if (currentScene.edges && currentScene.edges.length === 1) {
-      const nextNodeId = currentScene.edges[0].target;
-      const nextScene = graph.nodes[nextNodeId];
-
-      log.info('Playback', 'Auto-advancing to next scene', {
-        currentNode: currentScene.id,
-        nextNode: nextNodeId,
-        nextNodeKind: nextScene?.kind,
-        nextNodeName: nextScene?.name,
-      });
-
-      if (nextScene.kind === SceneType.CHOICE) {
-        // Move to choice screen but keep video visible (paused)
-        setCurrentScene(nextScene);
-        // Don't clear videoPath - keep showing current video with overlay on top
-        log.info('Playback', 'Showing choice overlay', { 
-          choiceNodeId: nextScene.id,
-          choiceName: nextScene.name,
-          optionCount: nextScene.edges?.length || 0,
-        });
-      } else if (nextScene.kind === SceneType.END) {
-        // End of game
-        log.info('Playback', 'Game ended', { finalNode: nextScene.id });
-        alert('Game Complete! Thanks for playing!');
-        router.push('/');
-      } else {
-        // Should not happen since we already played the final extension
-        log.warn('Playback', 'Unexpected auto-advance after final extension', {
-          currentNode: currentScene.id,
-          nextNode: nextScene.id,
-        });
-        advanceToScene(nextScene);
+      if (event.key === 'Enter' || event.key === ' ') {
+        event.preventDefault();
+        choose(choices[activeChoiceIndex]);
       }
-    } else if (!currentScene.edges || currentScene.edges.length === 0) {
-      // End of game
-      log.info('Playback', 'Game ended', { finalNode: currentScene.id });
-      alert('Game Complete! Thanks for playing.');
-      router.push('/');
-    } else {
-      // Multiple edges - shouldn't happen for final extension
-      log.error('Playback', 'Multiple edges after video end - unexpected', undefined, {
-        nodeId: currentScene.id,
-        edgeCount: currentScene.edges.length,
-        edges: currentScene.edges,
-      });
-    }
-  };
-
-  const handleChoiceSelected = (choiceIndex: number, choiceLabel: string, targetNodeId: string) => {
-    if (!graph || !saveGame || !currentScene) return;
-
-    // Get the choice video for this option
-    const choiceVideos = getChoiceVideos(graphId, currentScene.id);
-    const choiceVideo = choiceVideos?.[choiceIndex];
-    
-    if (!choiceVideo) {
-      log.error('Playback', 'Choice video not found', undefined, {
-        nodeId: currentScene.id,
-        choiceIndex,
-      });
-      alert('Choice video not found. Please regenerate the game.');
-      return;
-    }
-    
-    // Calculate start time for choice video (skip parent content)
-    const startTime = calculateStartTime(currentScene);
-    
-    log.info('Playback', 'Choice selected, playing choice video', {
-      nodeId: currentScene.id,
-      choiceIndex,
-      choiceLabel,
-      videoPath: choiceVideo.videoPath,
-      startTime,
-      nextNodeId: targetNodeId,
-    });
-
-    // Record choice in save game
-    recordChoice(saveGame.id, currentScene.id, choiceLabel);
-
-    // Play the choice video starting at the right timestamp
-    setPlayingChoiceVideo({
-      videoPath: choiceVideo.videoPath,
-      targetNodeId,
-      choiceLabel,
-    });
-    setVideoPath(choiceVideo.videoPath);
-    setVideoStartTime(startTime);
-  };
-
-  const handleChoiceVideoEnd = () => {
-    if (!playingChoiceVideo || !graph) return;
-
-    log.info('Playback', 'Choice video ended, advancing to child', {
-      targetNodeId: playingChoiceVideo.targetNodeId,
-      choiceLabel: playingChoiceVideo.choiceLabel,
-    });
-
-    // Get the immediate child after choice
-    const firstChildAfterChoice = graph.nodes[playingChoiceVideo.targetNodeId];
-    
-    // Find the final extension in the chain
-    const finalExtension = findFinalExtensionInChain(firstChildAfterChoice);
-    
-    log.info('Playback', 'Extension chain after choice', {
-      firstChild: firstChildAfterChoice?.id,
-      finalExtension: finalExtension?.id,
-    });
-    
-    // IMPORTANT: Calculate startTime based on the FIRST child (where chain begins)
-    // But PLAY the final extension's video
-    const startTime = calculateStartTime(firstChildAfterChoice);
-    
-    setPlayingChoiceVideo(null);
-    
-    // Update save game
-    const updatedSave = {
-      ...saveGame!,
-      currentNodeId: finalExtension.id,
-      currentSceneName: finalExtension.name || finalExtension.id,
-      playTimeSec: saveGame!.playTimeSec + Math.floor((Date.now() - sessionStartTime) / 1000),
     };
-    updateSaveGame(updatedSave);
-    setSaveGame(updatedSave);
+    window.addEventListener('keydown', onKeyDown);
+    return () => window.removeEventListener('keydown', onKeyDown);
+  }, [activeChoiceIndex, choose, choices, showChoices]);
 
-    setCurrentScene(finalExtension);
-    setVideoPath(getGraph(graphId)?.videoFiles[finalExtension.id] || null);
-    setVideoStartTime(startTime); // Start where the first extension begins!
-    setSessionStartTime(Date.now());
-    
-    log.info('Playback', 'Playing final extension with first child start time', {
-      playingNode: finalExtension.id,
-      startTime,
-      firstChildInChain: firstChildAfterChoice.id,
-    });
+  const handleRestart = () => {
+    if (!db || !playthrough) return;
+    const restarted = restartPlaythrough(db, playthrough.id);
+    persist(restarted.db, restarted.playthrough);
+    setShowChoices(false);
+    setShowEnding(false);
+    setSelectedChoiceId(null);
+    setActiveChoiceIndex(0);
   };
 
-  const advanceToScene = (scene: Scene) => {
-    if (!saveGame) return;
-
-    // Update save game
-    const updatedSave = {
-      ...saveGame,
-      currentNodeId: scene.id,
-      currentSceneName: scene.name || scene.id,
-      playTimeSec: saveGame.playTimeSec + Math.floor((Date.now() - sessionStartTime) / 1000),
-    };
-    updateSaveGame(updatedSave);
-    setSaveGame(updatedSave);
-
-    setCurrentScene(scene);
-    loadVideoForScene(graphId, scene);
-    setSessionStartTime(Date.now());
-
-    log.info('Playback', 'Scene transition', {
-      from: currentScene?.id,
-      to: scene.id,
-      type: scene.kind,
-    });
+  const handleUnlock = () => {
+    if (!db || !scenario) return;
+    const next = grantContentPackEntitlement(db, scenario.contentPackId);
+    saveDatabase(next);
+    setDb(next);
+    const created = createPlaythrough(next, scenario.id);
+    persist(created.db, created.playthrough);
   };
 
-  if (showSaveGameList) {
+  if (!db || !scenario) {
     return (
-      <SaveGameList
-        graphId={graphId}
-        onSelect={handleSelectSaveGame}
-        onCancel={() => router.push('/')}
-      />
-    );
-  }
-
-  if (!currentScene || !graph) {
-    return (
-      <div className="min-h-screen bg-black flex items-center justify-center text-white">
+      <main className="min-h-screen bg-zinc-950 text-white flex items-center justify-center">
         <div className="text-center">
-          <div className="text-2xl mb-4">Loading...</div>
+          <RefreshCw className="mx-auto mb-3 h-6 w-6 animate-spin" />
+          Loading scenario
         </div>
-      </div>
+      </main>
     );
   }
 
-  // If playing a choice video, show video player
-  if (playingChoiceVideo && videoPath) {
+  if (!access?.playable) {
     return (
-      <div className="min-h-screen bg-black">
-        <VideoPlayer
-          key={`${currentScene.id}-choice-${videoPath}`}
-          videoPath={videoPath}
-          scene={currentScene}
-          startTime={videoStartTime}
-          onVideoEnd={handleChoiceVideoEnd}
-          onBack={() => router.push('/')}
-        />
-      </div>
+      <main className="min-h-screen bg-zinc-950 text-white flex items-center justify-center p-4">
+        <section className="w-full max-w-md rounded-md border border-white/15 bg-white/10 p-6 shadow-2xl backdrop-blur">
+          <Lock className="mb-4 h-8 w-8 text-rose-300" />
+          <h1 className="text-2xl font-semibold">{scenario.title}</h1>
+          <p className="mt-2 text-sm leading-6 text-white/70">{scenario.description}</p>
+          <Badge className="mt-4 border-rose-300 bg-rose-950 text-rose-100" variant="outline">
+            {access?.label || 'Locked'}
+          </Badge>
+          <div className="mt-6 flex flex-wrap gap-2">
+            <Button onClick={handleUnlock} data-testid="locked-unlock">
+              Unlock Story
+            </Button>
+            <Button variant="outline" onClick={() => router.push('/')} className="border-white/30 bg-transparent text-white hover:bg-white hover:text-zinc-950">
+              <ArrowLeft className="mr-2 h-4 w-4" />
+              Catalog
+            </Button>
+          </div>
+        </section>
+      </main>
     );
   }
 
-  // Show video player with choice overlay on top
-  const showChoiceOverlay = currentScene.kind === SceneType.CHOICE && !playingChoiceVideo;
-  
+  if (!playthrough || !currentNode || (!clip && !endingActive)) {
+    return (
+      <main className="min-h-screen bg-zinc-950 text-white flex items-center justify-center p-4">
+        <section className="w-full max-w-md rounded-md border border-white/15 bg-white/10 p-6 text-center">
+          <h1 className="text-xl font-semibold">Scenario is not ready for playback</h1>
+          <p className="mt-2 text-sm text-white/70">Generate dummy clips in the builder before playtesting this route.</p>
+          <Button className="mt-5" onClick={() => router.push(`/designer?scenarioId=${scenario.id}`)}>
+            Open Builder
+          </Button>
+        </section>
+      </main>
+    );
+  }
+
+  const pathSummary = buildPathSummary(db, playthrough);
+
   return (
-    <div className="min-h-screen bg-black relative">
-      {videoPath && (
-        <VideoPlayer
-          key={`${currentScene.id}-${videoPath}`}
-          videoPath={videoPath}
-          scene={currentScene}
-          startTime={videoStartTime}
-          onVideoEnd={handleVideoEnd}
-          onBack={() => router.push('/')}
-          shouldPause={showChoiceOverlay}
+    <main className="relative min-h-screen overflow-hidden bg-zinc-950 text-white" data-testid="player">
+      {!endingActive && clip && (
+        <SimulatedVideoClip
+          key={`${clip.id}-${playthrough.currentNodeId}`}
+          clip={clip}
+          node={currentNode}
+          paused={false}
+          fast={fastMode}
+          onDecisionReady={handleDecisionReady}
+          onEnded={handleClipEnded}
         />
       )}
-      
-      {showChoiceOverlay && (
-        <ChoiceOverlay
-          scene={currentScene}
-          graphId={graphId}
-          choiceVideos={getChoiceVideos(graphId, currentScene.id)}
-          onChoiceSelected={handleChoiceSelected}
-          onBack={() => router.push('/')}
-        />
+
+      <div className="absolute left-4 top-4 z-20 flex flex-wrap gap-2 sm:left-6 sm:top-6">
+        <Button
+          variant="outline"
+          onClick={() => router.push('/')}
+          className="border-white/30 bg-black/30 text-white hover:bg-white hover:text-zinc-950"
+        >
+          <ArrowLeft className="mr-2 h-4 w-4" />
+          Catalog
+        </Button>
+        <Button
+          variant="outline"
+          onClick={handleRestart}
+          className="border-white/30 bg-black/30 text-white hover:bg-white hover:text-zinc-950"
+        >
+          <RotateCcw className="mr-2 h-4 w-4" />
+          Restart
+        </Button>
+        {publisherPreview && (
+          <Badge className="border-amber-300 bg-amber-950/80 text-amber-100" variant="outline">
+            Publisher preview
+          </Badge>
+        )}
+      </div>
+
+      {showChoices && !endingActive && choices.length > 0 && (
+        <section className="absolute inset-x-0 bottom-0 z-30 bg-gradient-to-t from-black via-black/90 to-transparent px-4 pb-[calc(env(safe-area-inset-bottom)+2rem)] pt-24 sm:px-6 sm:pb-8">
+          <div className="mx-auto max-w-4xl">
+            <div className="mb-4 flex items-center gap-2 text-sm text-white/70">
+              <CheckCircle2 className="h-4 w-4 text-teal-300" />
+              Decision point
+            </div>
+            <div className="grid gap-3 sm:grid-cols-2">
+              {choices.map((choice, index) => (
+                <button
+                  key={choice.id}
+                  type="button"
+                  onMouseEnter={() => setActiveChoiceIndex(index)}
+                  onFocus={() => setActiveChoiceIndex(index)}
+                  onClick={() => choose(choice)}
+                  className={`min-h-24 rounded-md border p-4 text-left transition ${selectedChoiceId === choice.id
+                      ? 'border-teal-200 bg-teal-400 text-zinc-950'
+                      : activeChoiceIndex === index
+                        ? 'border-white bg-white text-zinc-950'
+                        : 'border-white/20 bg-white/10 text-white hover:border-white hover:bg-white hover:text-zinc-950'
+                    }`}
+                  data-testid={`choice-${index}`}
+                >
+                  <div className="text-base font-semibold">{choice.label}</div>
+                  <div className="mt-1 text-sm opacity-75">{choice.description}</div>
+                </button>
+              ))}
+            </div>
+          </div>
+        </section>
       )}
-    </div>
+
+      {endingActive && (
+        <section className="absolute inset-0 z-40 flex items-center justify-center bg-zinc-950 p-4">
+          <div className="w-full max-w-2xl rounded-md border border-white/15 bg-white/10 p-6 shadow-2xl backdrop-blur">
+            <Badge className="border-teal-300 bg-teal-950 text-teal-100" variant="outline">
+              Ending reached
+            </Badge>
+            <h1 className="mt-4 text-3xl font-semibold">{currentNode.title}</h1>
+            <p className="mt-3 text-white/70">{currentNode.description || scenario.description}</p>
+            <div className="mt-6 rounded-md border border-white/10 bg-black/25 p-4">
+              <div className="mb-3 text-sm font-medium text-white/70">Path Taken</div>
+              <div className="flex flex-wrap gap-2">
+                {pathSummary.map((item, index) => (
+                  <Badge key={`${item}-${index}`} variant="outline" className="border-white/20 bg-white/10 text-white">
+                    {item}
+                  </Badge>
+                ))}
+              </div>
+            </div>
+            <div className="mt-6 flex flex-wrap gap-2">
+              <Button onClick={handleRestart}>
+                <RotateCcw className="mr-2 h-4 w-4" />
+                Replay
+              </Button>
+              <Button variant="outline" onClick={() => router.push('/')} className="border-white/30 bg-transparent text-white hover:bg-white hover:text-zinc-950">
+                Catalog
+              </Button>
+            </div>
+          </div>
+        </section>
+      )}
+    </main>
   );
 }
 
+export default function PlayPage() {
+  return (
+    <Suspense fallback={
+      <main className="min-h-screen bg-zinc-950 text-white flex items-center justify-center">
+        <RefreshCw className="mr-2 h-5 w-5 animate-spin" />
+        Loading scenario
+      </main>
+    }>
+      <PlayPageContent />
+    </Suspense>
+  );
+}
